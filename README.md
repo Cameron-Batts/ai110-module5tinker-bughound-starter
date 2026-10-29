@@ -1,109 +1,55 @@
-# 🐶 BugHound
+# BugHound
 
-BugHound is a small, agent-style debugging tool. It analyzes a Python code snippet, proposes a fix, and runs basic reliability checks before deciding whether the fix is safe to apply automatically.
+Cameron Batts
 
----
+An experimental Python debugging assistant that analyzes a snippet, proposes a change and applies a conservative static-review policy. It provides an offline heuristic mode and optional Gemini proposals.
 
-## What BugHound Does
+## Review policy
 
-Given a short Python snippet, BugHound:
+A score is a heuristic, not a probability that a fix is correct. A proposal is eligible only when all of these checks pass:
 
-1. **Analyzes** the code for potential issues  
-   - Uses heuristics in offline mode  
-   - Uses Gemini when API access is enabled  
+- Both snippets parse as standalone Python.
+- Issue records have the expected nonempty fields and recognized severities.
+- The heuristic score is at least 85 and the risk label is low.
+- The line-change ratio is at most 50%.
+- The original and proposed ASTs have identical executable structure.
 
-2. **Proposes a fix**  
-   - Either heuristic-based or LLM-generated  
-   - Attempts minimal, behavior-preserving changes  
+Executable changes require human review even when their score is 100. This intentionally routes logging replacements, modified return values and changed exception handling for review. Formatting/comment-only changes can be eligible if the other conditions hold. The eligibility flag does not write files, and AST equivalence is not a general runtime correctness proof.
 
-3. **Assesses risk**  
-   - Scores the fix  
-   - Flags high-risk changes  
-   - Decides whether the fix should be auto-applied or reviewed by a human  
+## Heuristics
 
-4. **Shows its work**  
-   - Displays detected issues  
-   - Shows a diff between original and fixed code  
-   - Logs each agent step
+The analyzer identifies actual print calls and bare exception handlers through Python's AST. TODO checks inspect comments. Strings and comments containing print-like text no longer trigger print-call changes.
 
----
+The proposal editor changes source spans rather than replacing every print-like substring. It preserves quoted/comment text, UTF-8 offsets and future-import placement. More complex print signatures remain for manual attention. Proposed snippets are parsed rather than executed by these checks.
 
-## Setup
-
-### 1. Create a virtual environment (recommended)
+## Run
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate   # macOS/Linux
-# or
-.venv\Scripts\activate      # Windows
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m streamlit run bughound_app.py
 ```
 
-### 2. Install dependencies
+Choose Heuristic only for the offline workflow. Gemini mode requires a locally configured API key. Provider charges may apply when generation is requested.
+
+## Verified tests
 
 ```bash
-pip install -r requirements.txt
+python3 -m pytest -q
 ```
-
----
-
-## Running in Offline (Heuristic) Mode
-
-No API key required.
-
-```bash
-streamlit run bughound_app.py
-```
-
-In the sidebar, select:
-
-* **Model mode:** Heuristic only (no API)
-
-This mode uses simple pattern-based rules and is useful for testing the workflow without network access.
-
----
-
-## Running with Gemini
-
-### 1. Set up your API key
-
-Copy the example file:
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` and add your Gemini API key:
 
 ```text
-GEMINI_API_KEY=your_real_key_here
+23 passed
 ```
 
-### 2. Run the app
+Tests cover the existing workflow, invalid model-response fallback, invalid Python, score thresholds, changed return values, large rewrites, comment/string false positives, UTF-8 source edits and future imports. Model clients in these tests are offline/mocked; live Gemini generation was not rerun.
 
-```bash
-streamlit run bughound_app.py
-```
+## Examples
 
-In the sidebar, select:
+- A comment containing print-like text: no print issue or logging rewrite.
+- A real one-argument print call: a logging proposal is shown, with human review required.
+- A valid function changing return 1 to return 999: score can remain 100, but automatic eligibility is false.
+- An invalid proposed snippet: high risk, score 0, automatic eligibility false.
 
-* **Model mode:** Gemini (requires API key)
-* Choose a Gemini model and temperature
-
-BugHound will now use Gemini for analysis and fix generation, while still applying local reliability checks.
-
----
-
-## Running Tests
-
-Tests focus on **reliability logic** and **agent behavior**, not the UI.
-
-```bash
-pytest
-```
-
-You should see tests covering:
-
-* Risk scoring and guardrails
-* Heuristic fallbacks when LLM output is invalid
-* End-to-end agent workflow shape
+The model card distinguishes historical generation observations from the current static-policy checks. The original starter's provenance remains visible through this repository's GitHub fork lineage.

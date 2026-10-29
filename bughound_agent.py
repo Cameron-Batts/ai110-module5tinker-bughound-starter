@@ -1,3 +1,6 @@
+import ast
+import io
+import tokenize
 import json
 import os
 import re
@@ -126,48 +129,64 @@ class BugHoundAgent:
     # Heuristic analyzer/fixer
     # ----------------------------
     def _heuristic_analyze(self, code: str) -> List[Dict[str, str]]:
-        issues: List[Dict[str, str]] = []
-
-        if "print(" in code:
-            issues.append(
-                {
-                    "type": "Code Quality",
-                    "severity": "Low",
-                    "msg": "Found print statements. Consider using logging for non-toy code.",
-                }
-            )
-
-        if re.search(r"\bexcept\s*:\s*(\n|#|$)", code):
-            issues.append(
-                {
-                    "type": "Reliability",
-                    "severity": "High",
-                    "msg": "Found a bare `except:`. Catch a specific exception or use `except Exception as e:`.",
-                }
-            )
-
-        if "TODO" in code:
-            issues.append(
-                {
-                    "type": "Maintainability",
-                    "severity": "Medium",
-                    "msg": "Found TODO comments. Unfinished logic can hide bugs or missing cases.",
-                }
-            )
-
+        try:
+            tree = ast.parse(code)
+        except (SyntaxError, ValueError):
+            return [{"type": "Syntax", "severity": "High", "msg": "Input is not valid standalone Python."}]
+        issues = []
+        if any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "print"
+               for n in ast.walk(tree)):
+            issues.append({"type": "Code Quality", "severity": "Low", "msg": "Found print calls. Review whether logging is appropriate."})
+        if any(isinstance(n, ast.ExceptHandler) and n.type is None for n in ast.walk(tree)):
+            issues.append({"type": "Reliability", "severity": "High", "msg": "Found a bare except handler. Narrowing it changes behavior and needs review."})
+        comments = [t.string for t in tokenize.generate_tokens(io.StringIO(code).readline)
+                    if t.type == tokenize.COMMENT]
+        if any(re.search(r"\bTODO\b", comment) for comment in comments):
+            issues.append({"type": "Maintainability", "severity": "Medium", "msg": "Found TODO comments; inspect unfinished work."})
         return issues
 
     def _heuristic_fix(self, code: str, issues: List[Dict[str, str]]) -> str:
+        # Edit only actual syntax nodes; preserve comments and quoted text.
+        try:
+            tree = ast.parse(code)
+        except (SyntaxError, ValueError):
+            return code
+        lines = code.splitlines(keepends=True)
+        starts, offset = [], 0
+        for line in lines:
+            starts.append(offset)
+            offset += len(line)
+        replacements = []
+        needs_logging = False
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "print" and len(node.args) == 1
+                    and not isinstance(node.args[0], ast.Starred) and not node.keywords):
+                line = lines[node.func.lineno - 1]
+                # AST columns count UTF-8 bytes, while Python string indices count characters.
+                column = len(line.encode("utf-8")[:node.func.col_offset].decode("utf-8"))
+                begin = starts[node.func.lineno - 1] + column
+                replacements.append((begin, begin + len("print"), "logging.info"))
+                needs_logging = True
+            if isinstance(node, ast.ExceptHandler) and node.type is None:
+                line = lines[node.lineno - 1]
+                match = re.search(r"\bexcept\s*:", line)
+                if match:
+                    begin = starts[node.lineno - 1] + match.start()
+                    replacements.append((begin, starts[node.lineno - 1] + match.end(), "except Exception as e:"))
+        if needs_logging and not any(isinstance(n, ast.Import) and any(a.name == "logging" and a.asname is None for a in n.names) for n in tree.body):
+            anchor = 0
+            body = list(tree.body)
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+                anchor = body.pop(0).end_lineno
+            while body and isinstance(body[0], ast.ImportFrom) and body[0].module == "__future__":
+                anchor = body.pop(0).end_lineno
+            position = sum(len(line) for line in lines[:anchor])
+            prefix = "\n" if position and not code[:position].endswith("\n") else ""
+            replacements.append((position, position, prefix + "import logging\n\n"))
         fixed = code
-
-        if any(i.get("type") == "Reliability" for i in issues):
-            fixed = re.sub(r"\bexcept\s*:\s*", "except Exception as e:\n        # [BugHound] log or handle the error\n        ", fixed)
-
-        if any(i.get("type") == "Code Quality" for i in issues):
-            if "import logging" not in fixed:
-                fixed = "import logging\n\n" + fixed
-            fixed = fixed.replace("print(", "logging.info(")
-
+        for begin, end, replacement in sorted(replacements, reverse=True):
+            fixed = fixed[:begin] + replacement + fixed[end:]
         return fixed
 
     # ----------------------------
@@ -244,3 +263,4 @@ class BugHoundAgent:
 
     def _log(self, step: str, message: str) -> None:
         self.logs.append({"step": step, "message": message})
+

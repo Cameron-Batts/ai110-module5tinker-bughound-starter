@@ -1,95 +1,37 @@
-# BugHound Mini Model Card
+# BugHound Model Card
 
-## 1) System overview
+Cameron Batts
 
-BugHound is an experimental debugging assistant for students learning agentic workflows. It analyzes Python snippets, proposes changes, and recommends whether a proposed fix needs human review. The app displays proposed code; its auto-fix flag is a recommendation, not evidence that a file was changed.
+## Purpose and workflow
 
-## 2) Workflow
+BugHound is an experimental agent-style assistant that proposes Python edits and explains a static review decision. Its PLAN, ANALYZE, ACT, TEST and REFLECT steps are orchestration labels; the TEST step parses and scores a proposal rather than executing its behavior. The app displays proposed code and an eligibility flag; it does not automatically write source files.
 
-- PLAN: Log the planned scan and fix workflow.
-- ANALYZE: Use heuristic rules offline or ask Gemini for structured issue records.
-- ACT: Propose a heuristic or Gemini-generated fix.
-- TEST: Check proposed Python syntax and apply risk-scoring rules.
-- REFLECT: Recommend auto-fix only when the risk is low and the score is at least 85.
+## Current review policy
 
-The heuristic analyzer searches for print calls, bare exception handlers, and TODO text. Gemini uses prompt templates to analyze code and propose fixes. Invalid JSON, invalid issue records, or unavailable model output trigger heuristic fallback.
+Issue records must contain nonempty type, severity and msg strings with a recognized severity. Invalid records trigger fallback at the agent boundary and fail closed when sent directly to the risk assessor.
 
-These reliability checks do not execute the proposed code or prove that its behavior is correct.
+Both original and proposed snippets must parse. High, Medium and Low issue severities deduct 40, 20 and 5 points. Return removal, severe shortening and changed bare handlers have additional deductions. Scores are heuristic diagnostics, not calibrated correctness probabilities.
 
-## 3) Inputs and outputs
+Eligibility requires low risk, score at least 85, line-change ratio at most 0.5, and an unchanged executable AST. Changed return values and other executable edits require human review even with score 100. This is deliberately conservative: most useful code repairs will be review-only proposals. AST equality does not prove a program is correct or free from context-dependent effects.
 
-I tested short functions, a try/except function, a mostly clean function, and comments-only input.
+## Heuristics and source preservation
 
-| Input and mode | Observed result |
-| --- | --- |
-| cleanish.py, heuristic | No issues; unchanged code; score 100; low risk; auto-fix YES, with nothing to apply. |
-| mixed_issues.py, heuristic, terminal file | Print, bare except, and TODO detected; score 30; high risk; auto-fix NO. |
-| Comments-only input, heuristic | Print text inside a comment triggered a false positive; unnecessary logging import and comment rewrite; score 75; auto-fix NO. |
-| mixed_issues.py, Gemini, app sample | Three issues detected; TODO and print rated Low, bare except rated High; score 45; medium risk; auto-fix NO. |
-| print_spam.py, Gemini, terminal file | One Low issue; diagnostic print replaced with logging; greeting prints preserved; score 95; low risk; auto-fix YES. |
+Actual print calls and bare handlers are found with AST inspection. TODO checks inspect comments. Print-like text inside comments and strings is no longer treated as a call.
 
-The app embeds sample snippets that differ slightly from files in sample_code, so cross-mode comparisons are qualitative rather than controlled measurements.
+Source-span edits preserve comments, quoted text and UTF-8 positions. Added logging imports follow a module docstring and future imports. Only simple one-argument print calls are proposed for logging conversion; more complicated print behavior remains for review. Proposed changes are never executed by these static checks.
 
-## 4) Reliability rules and design decisions
+## Verified reliability evidence
 
-### Strict analysis validation
+The original 11 offline tests continue to pass. Twelve additional cases check large rewrites, changed return values, formatting-only eligibility, comment/string false positives, malformed issues, invalid originals, UTF-8 positions, future imports and exception-handler indentation. All 23 tests passed.
 
-Previously, a JSON record containing only an invalid severity was accepted with default fields. Now every issue must have nonempty string fields for type, severity, and msg. Severity must be Low, Medium, or High, ignoring case. A malformed record rejects the response and triggers heuristic fallback. A valid empty array remains acceptable.
+No live Gemini calls were made during this verification. Mock clients exercise schema failure and fallback. Passing tests establishes the covered behaviors, not arbitrary fix correctness.
 
-### Severity deductions
+## Historical model observations
 
-High, Medium, and Low issues deduct 40, 20, and 5 points respectively. This encourages review when serious issues are present.
+The earlier model card recorded Gemini proposing input validation that changed exception behavior, and converting diagnostic printing while retaining greeting output. These are historical observations from the previous policy, not fresh results. A proposal previously shown as auto-fix eligible may now require review because executable structure changed.
 
-False positive: a correctly repaired serious issue can still cause rejection because the score uses original issue severity.
-False negative: a model can omit or underrate an issue, leaving an unsafe fix with a high score.
+## Limitations and misuse
 
-### Return-removal check
+The heuristic detector is intentionally narrow. A function named print may shadow the builtin. Logging conversion can change output semantics, and narrowing a bare handler changes which exceptions are caught. A model may omit a serious issue; a heuristic score cannot compensate for that. Large diff and AST checks do not prove safety. Standalone parsing may reject valid context-dependent fragments.
 
-If the original contains "return" and the proposal does not, 30 points are deducted.
-
-False positive: the word can occur only in a comment or string.
-False negative: one return can remain while another is removed, or a return value can change without triggering the rule.
-
-### Syntax guardrail
-
-The risk assessor parses proposed code using ast.parse without executing it. Invalid syntax produces high risk, score 0, and no auto-fix.
-
-False positive: a valid fragment requiring surrounding context may be rejected as a standalone snippet.
-False negative: syntactically valid code can still raise runtime errors or change behavior.
-
-### Stricter auto-fix policy
-
-The previous policy allowed any low-risk score, starting at 75. Auto-fix now requires at least 85. A controlled test with score 80 changed from YES to NO while retaining the same score and low-risk label. The label and permission threshold serve different purposes.
-
-## 5) Observed failure modes
-
-1. The heuristic analyzer treated print text inside a comment as an actual call. Its fixer added logging and edited the comment unnecessarily.
-2. Before the syntax guardrail, a controlled test showed that invalid Python could be approved for auto-fix. The new guardrail rejects it.
-3. Gemini added validate_input to the mixed-issues function and called it before the try block. Invalid inputs now raise TypeError instead of returning 0 as the original broad handler did. This changes behavior and requires review.
-4. The app originally connected its heuristic option to MockClient. This produced simulated LLM traces and a placeholder fix. I changed that option to client=None so it uses the actual heuristic analyzer and fixer.
-
-## 6) Heuristic versus Gemini
-
-Heuristics consistently detected the three text patterns in the mixed-issues sample. They rated TODO as Medium, while Gemini rated it Low in the observed run. Both modes required human review.
-
-For print_spam.py, the heuristic fixer would replace every print call. Gemini instead changed the diagnostic print and retained the user-facing greetings. However, it also added logging.basicConfig at module scope. The score of 95 did not reflect the possible effect on application-wide logging.
-
-Gemini's mixed-issues fix added input validation and narrowed the exception handler to ZeroDivisionError. Those changes require understanding intended behavior. MockClient results were simulated and are not counted as real Gemini evidence.
-
-## 7) Human-in-the-loop decision
-
-Invalid Python must never be approved for auto-fix. This guardrail is implemented in reliability/risk_assessor.py.
-
-Trigger: the proposed code fails Python parsing.
-Decision: high risk, score 0, no auto-fix.
-Message: "Proposed fix has invalid Python syntax. Human review required."
-
-A syntactically valid change to exception handling or validation can also require human review. The mixed-issues Gemini proposal is an example: its new TypeError behavior may be intentional, but the agent cannot decide that from syntax alone.
-
-## 8) Tests and future improvement
-
-Before implementation, the three new regression tests failed and the eight existing tests passed. After implementation, all 11 tests passed.
-
-The new tests protect invalid-issue fallback, human review at score 80, and rejection of invalid Python syntax.
-
-A next improvement is to inspect print calls using Python's AST rather than substring matching. A measurable acceptance criterion is that comments or strings containing "print(" cause no print-call issue and no rewrite, while an actual print call remains detectable.
+Keep human review for executable changes, inspect proposed diffs, and run appropriate project tests in a controlled environment before using a proposal. Avoid sharing secrets or private code with an external model without appropriate authorization.

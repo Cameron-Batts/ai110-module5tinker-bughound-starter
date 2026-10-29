@@ -1,0 +1,85 @@
+{
+  "python_version": "3.12.14",
+  "tests_passed": 23,
+  "mode": "offline and mocked tests",
+  "cases": [
+    {
+      "case": "comment",
+      "input": "# print('not executable')\nx = 1\n",
+      "issues": [],
+      "proposal": "# print('not executable')\nx = 1\n",
+      "risk": {
+        "score": 100,
+        "level": "low",
+        "reasons": [
+          "No static policy issue detected; this is not a runtime correctness guarantee."
+        ],
+        "change_ratio": 0.0,
+        "executable_structure_changed": false,
+        "should_autofix": true
+      }
+    },
+    {
+      "case": "actual_print",
+      "input": "print('hello')\n",
+      "issues": [
+        {
+          "type": "Code Quality",
+          "severity": "Low",
+          "msg": "Found print calls. Review whether logging is appropriate."
+        }
+      ],
+      "proposal": "import logging\n\nlogging.info('hello')\n",
+      "risk": {
+        "score": 95,
+        "level": "low",
+        "reasons": [
+          "Low severity issue detected.",
+          "Large rewrite exceeds the 50% line-change threshold. Human review required.",
+          "Executable structure changed; behavioral correctness needs human review."
+        ],
+        "change_ratio": 1.0,
+        "executable_structure_changed": true,
+        "should_autofix": false
+      }
+    },
+    {
+      "case": "bare_except",
+      "input": "def f():\n    try:\n        return 1\n    except:\n        return 0\n",
+      "issues": [
+        {
+          "type": "Reliability",
+          "severity": "High",
+          "msg": "Found a bare except handler. Narrowing it changes behavior and needs review."
+        }
+      ],
+      "proposal": "def f():\n    try:\n        return 1\n    except Exception as e:\n        return 0\n",
+      "risk": {
+        "score": 55,
+        "level": "medium",
+        "reasons": [
+          "High severity issue detected.",
+          "Bare except was modified, verify correctness.",
+          "Executable structure changed; behavioral correctness needs human review."
+        ],
+        "change_ratio": 0.19999999999999996,
+        "executable_structure_changed": true,
+        "should_autofix": false
+      }
+    },
+    {
+      "case": "changed_return",
+      "risk": {
+        "score": 100,
+        "level": "low",
+        "reasons": [
+          "Executable structure changed; behavioral correctness needs human review."
+        ],
+        "change_ratio": 0.5,
+        "executable_structure_changed": true,
+        "should_autofix": false
+      }
+    }
+  ],
+  "live_gemini_evaluated": false
+}
